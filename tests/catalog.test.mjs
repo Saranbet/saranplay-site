@@ -1,0 +1,18 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import ts from 'typescript';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+const mod={exports:{}};
+const output=ts.transpileModule(fs.readFileSync('lib/catalog-schema.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;
+new Function('require','exports','module',output)(require,mod.exports,mod);
+const {schema}=mod.exports;
+const data=JSON.parse(fs.readFileSync('supabase/catalogo-inicial.json','utf8'));
+const product={id:'test',name:'Tenda',category:data.categories[0],description:'',image:'',price:100,promoPrice:null,promoStart:'',promoEnd:'',active:true,featured:false,stock:2};
+test('catálogo exportado é válido',()=>assert.equal(schema.safeParse(data).success,true));
+test('rejeita promoções superiores ao preço normal',()=>assert.equal(schema.safeParse({...data,products:[{...product,promoPrice:101}]}).success,false));
+test('rejeita stock negativo',()=>assert.equal(schema.safeParse({...data,products:[{...product,stock:-1}]}).success,false));
+test('rejeita imagens externas e scripts',()=>{for(const image of ['javascript:alert(1)','https://externo.test/foto.png','/uploads/../../secret'])assert.equal(schema.safeParse({...data,logo:image}).success,false)});
+test('aceita novas categorias e imagens válidas',()=>assert.equal(schema.safeParse({...data,categories:[...data.categories,'Campismo','Lazer'],products:[{...product,category:'Campismo',image:'/uploads/12c9084a-731d-4af9-91b3-12c9084a731d.png'}]}).success,true));
+test('rejeita datas promocionais invertidas',()=>assert.equal(schema.safeParse({...data,products:[{...product,promoStart:'2026-10-20',promoEnd:'2026-10-19'}]}).success,false));
