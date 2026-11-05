@@ -1,0 +1,1 @@
+import type {Metadata} from 'next';import './globals.css';export const metadata:Metadata={title:'SaranPlay | Bilhares e Acessórios',description:'Conheça as mesas de bilhar, matraquilhos e acessórios da SaranPlay.'};export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="pt"><body>{children}</body></html>}

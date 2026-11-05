@@ -1,0 +1,31 @@
+import http from 'node:http';import {spawn} from 'node:child_process';import assert from 'node:assert/strict';import fs from 'node:fs';import {fileURLToPath} from 'node:url';
+const cwd=fileURLToPath(new URL('../',import.meta.url));
+let data=JSON.parse(fs.readFileSync(cwd+'/supabase/catalogo-inicial.json','utf8'));let revision=0;
+const base={id:'public',name:'Produto visível',category:data.categories[0],description:'',image:'',price:100,promoPrice:null,promoStart:'',promoEnd:'',active:true,featured:false,stock:1};
+data.products=[base,{...base,id:'private',active:false}];
+const supabase=http.createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const text=Buffer.concat(chunks).toString();const body=text?JSON.parse(text):{};res.setHeader('Content-Type','application/json');const respond=(status,value)=>{res.statusCode=status;res.end(JSON.stringify(value))};
+if(req.url.startsWith('/auth/v1/token'))return (body.password==='correct'||body.refresh_token==='refresh')?respond(200,{access_token:'valid',refresh_token:'refresh',expires_in:3600,user:{email:'admin@test.com',email_confirmed_at:'2026-01-01'}}):respond(400,{});
+if(req.url==='/auth/v1/user')return req.headers.authorization==='Bearer valid'?respond(200,{email:'admin@test.com',email_confirmed_at:'2026-01-01'}):respond(401,{});
+if(req.url==='/auth/v1/logout')return respond(200,{});
+if(req.url.startsWith('/rest/v1/site_admin_emails'))return req.headers.authorization==='Bearer valid'?respond(200,[{email:'admin@test.com'}]):respond(403,{});
+if(req.url.startsWith('/rest/v1/public_catalog'))return respond(200,[{data:{...data,products:data.products.filter(p=>p.active)},revision}]);
+if(req.url.startsWith('/rest/v1/documents')){if(req.method==='PATCH'){if(req.url.includes('revision=eq.'+revision)){data=body.data;revision=body.revision;return respond(200,[{data,revision}])}return respond(200,[])}return respond(200,[{data,revision}])}respond(404,{});
+});
+await new Promise(r=>supabase.listen(4199,'127.0.0.1',r));
+const app=spawn(process.execPath,['node_modules/next/dist/bin/next','start','-H','127.0.0.1','-p','4198'],{cwd,env:{...process.env,SUPABASE_URL:'http://127.0.0.1:4199',SUPABASE_ANON_KEY:'mock-public',ADMIN_EMAIL:'admin@test.com',SITE_URL:'http://127.0.0.1:4198'},stdio:'inherit'});
+const origin='http://127.0.0.1:4198';
+try{
+console.log('A iniciar servidor de teste…');let ready=false;for(let i=0;i<60;i++){try{const r=await fetch(origin+'/login');if(r.ok){ready=true;break}}catch{}await new Promise(r=>setTimeout(r,200))}assert.ok(ready,'Servidor iniciou');
+console.log('A verificar catálogo…');let r=await fetch(origin+'/api/catalog');let c=await r.json();assert.equal(c.admin,false);assert.equal(c.data.products.length,1,'Visitantes não vêem produtos ocultos');
+r=await fetch(origin+'/api/catalog',{method:'PUT',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({data,revision})});assert.equal(r.status,403,'Gravação anónima bloqueada');
+r=await fetch(origin+'/api/auth/login',{method:'POST',headers:{Origin:'https://outsider.test','Content-Type':'application/json'},body:JSON.stringify({email:'admin@test.com',password:'correct'})});assert.equal(r.status,403,'Origem externa bloqueada');
+r=await fetch(origin+'/api/auth/login',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({email:'admin@test.com',password:'wrong'})});assert.equal(r.status,401);
+r=await fetch(origin+'/api/auth/login',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({email:'admin@test.com',password:'correct'})});assert.equal(r.status,200);const setCookies=r.headers.getSetCookie();assert.ok(setCookies.every(s=>s.includes('HttpOnly')&&s.includes('Secure')));const cookie=setCookies.map(s=>s.split(';')[0]).join('; ');
+r=await fetch(origin+'/api/catalog',{headers:{Cookie:cookie}});c=await r.json();assert.equal(c.admin,true);assert.equal(c.data.products.length,2,'Administrador vê produtos ocultos');
+r=await fetch(origin+'/api/catalog',{headers:{Cookie:'sp-access=expired; sp-refresh=refresh'}});assert.equal((await r.json()).admin,true,'Sessão renovada com refresh token');assert.ok(r.headers.getSetCookie().length===2);
+const next={...c.data,categories:[...c.data.categories,'Categoria de teste']};
+r=await fetch(origin+'/api/catalog',{method:'PUT',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({data:next,revision:0})});assert.equal(r.status,200,'Administrador pode guardar');
+r=await fetch(origin+'/api/catalog',{method:'PUT',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({data:next,revision:0})});assert.equal(r.status,409,'Conflito de revisão protegido');
+r=await fetch(origin+'/api/auth/logout',{method:'POST',headers:{Cookie:cookie,Origin:origin}});assert.equal(r.status,200);assert.ok(r.headers.getSetCookie().every(s=>s.includes('Expires=Thu, 01 Jan 1970')));
+console.log('HTTP smoke: catálogo público, produtos ocultos, autenticação, cookies, origem, gravação, concorrência e saída — OK (Supabase simulado).');
+}finally{app.kill('SIGTERM');supabase.close()}
